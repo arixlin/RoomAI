@@ -5,7 +5,10 @@ import random
 import copy
 import itertools
 
-from roomai.doudizhupoker.DouDiZhuPokerInfo   import *
+from roomai.doudizhupoker.DouDiZhuPokerHandCards     import *
+from roomai.doudizhupoker.DouDiZhuPokerPublicState   import *
+from roomai.doudizhupoker.DouDiZhuPokerPrivateState  import *
+from roomai.doudizhupoker.DouDiZhuPokerPersonState   import *
 from roomai.doudizhupoker.DouDiZhuPokerAction import *
 
 class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
@@ -15,9 +18,9 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
 
     def __init__(self):
         super(DouDiZhuPokerEnv, self).__init__()
-        self.public_state  = DouDiZhuPublicState()
-        self.private_state = DouDiZhuPrivateState()
-        self.person_states = [DouDiZhuPersonState() for i in range(3)]
+        self.public_state  = DouDiZhuPokerPublicState()
+        self.private_state = DouDiZhuPokerPrivateState()
+        self.person_states = [DouDiZhuPokerPersonState() for i in range(3+1)] ## Three players and one chance player
 
 
 
@@ -50,10 +53,9 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
         '''
         Initialize the DouDiZhuPoker game environment with the initialization params.\n
         The initialization is a dict with some options\n
-        1) allcards: the order of all poker cards appearing\n
-        2) record_history: whether to record all history states. if you need call the backward function, please set it to True. default False\n
+        2) backward_enable: whether to record all history states. if you need call the backward function, please set it to True. default False\n
         3) start_turn: players[start_turn] is first to take an action\n
-        An example of the initialization param is {"start_turn":2,"record_history":True}\n
+        An example of the initialization param is {"start_turn":2,"backward_enable":True}\n
 
         :param params: the initialization params
         :return: infos, public_state, person_states, private_state
@@ -61,34 +63,40 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
 
         self.__params__ = dict()
 
-        if "allcards" in params:
-            self.__params__["allcards"] = [c for c in params["allcards"]]
+        if "backward_enable" in params:
+            self.__params__["backward_enable"] = params["backward_enable"]
         else:
-            self.__params__["allcards"] = []
-            for i in range(13):
-                for j in range(4):
-                    self.__params__["allcards"].append(DouDiZhuActionElement.rank_to_str[i])
-            self.__params__["allcards"].append(DouDiZhuActionElement.rank_to_str[13])
-            self.__params__["allcards"].append(DouDiZhuActionElement.rank_to_str[14])
-            random.shuffle(self.__params__["allcards"])
-
-        if "record_history" in params:
-            self.__params__["record_history"] = params["record_history"]
-        else:
-            self.__params__["record_history"] = False
+            self.__params__["backward_enable"] = False
 
         if "start_turn" in params:
             self.__params__["start_turn"] = params["start_turn"]
         else:
-            self.__params__["start_turn"] = int(random.random() * 2)
+            self.__params__["start_turn"] = int(random.random() * 3)
+
+        if "num_normal_players" in params:
+            logger = roomai.get_logger()
+            logger.warning("DouDiZhu is a game of 3 normal players (1 chance player). Ingores the \"num_normal_players\" option")
+        self.__params__["num_normal_players"] = 3
+
+        allcards = []
+        for i in range(13):
+            for j in range(4):
+                allcards.append(DouDiZhuActionElement.rank_to_str[i])
+        allcards.append(DouDiZhuActionElement.rank_to_str[13])
+        allcards.append(DouDiZhuActionElement.rank_to_str[14])
+        random.shuffle(allcards)
+
+
 
         for i in range(3):
-            tmp = self.__params__["allcards"][i*17:(i+1)*17]
+            tmp = allcards[i*17:(i+1)*17]
             tmp.sort()
             self.person_states[i].__hand_cards__ = DouDiZhuPokerHandCards("".join(tmp))
             self.person_states[i].__id__         = i
+        self.person_states[i].__id__ = 4
 
-        keep_cards = DouDiZhuPokerHandCards([self.__params__["allcards"][-1], self.__params__["allcards"][-2], self.__params__["allcards"][-3]])
+
+        keep_cards = DouDiZhuPokerHandCards([allcards[-1], allcards[-2], allcards[-3]])
         self.private_state.__keep_cards__ =  keep_cards;
 
         self.public_state.__turn__                = self.__params__["start_turn"]
@@ -104,7 +112,7 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
         self.person_states[turn].__available_actions__ = DouDiZhuPokerEnv.available_actions(self.public_state, self.person_states[turn])
 
         infos = self.__gen_infos__()
-        self.__gen_history__()
+        self.__gen_state_history_list__()
 
         return infos, self.public_state, self.person_states, self.private_state
 
@@ -158,7 +166,7 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
                 self.person_states[self.public_state.turn].__available_actions__ =\
                     DouDiZhuPokerEnv.available_actions(self.public_state, self.person_states[self.public_state.turn])
 
-                self.__gen_history__()
+                self.__gen_state_history_list__()
                 infos = self.__gen_infos__()
 
                 return infos, self.public_state, self.person_states, self.private_state
@@ -183,7 +191,7 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
                         self.public_state.__is_terminal__                           = True
                         self.public_state.__scores__                                = [1,1,1]
                         self.public_state.__scores__[self.public_state.landlord_id] = -2
-                    self.__gen_history__()
+                    self.__gen_state_history_list__()
                     infos = self.__gen_infos__()
                     return infos, self.public_state, self.person_states, self.private_state
             else:
@@ -204,7 +212,7 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
         self.person_states[self.public_state.turn].__available_actions__\
             = DouDiZhuPokerEnv.available_actions(self.public_state, self.person_states[self.public_state.turn])
          
-        self.__gen_history__()
+        self.__gen_state_history_list__()
         infos = self.__gen_infos__()
 
         return infos, self.public_state, self.person_states, self.private_state
@@ -516,8 +524,8 @@ class DouDiZhuPokerEnv(roomai.common.AbstractEnv):
 
     @classmethod
     def __available_actions_generate_all__(cls):
-        public_state = DouDiZhuPublicState()
-        person_state = DouDiZhuPersonState()
+        public_state = DouDiZhuPokerPublicState()
+        person_state = DouDiZhuPokerPersonState()
         public_state.__is_response__    = False
         person_state.__hand_cards__     = DouDiZhuPokerHandCards("")
         for i in range(13):

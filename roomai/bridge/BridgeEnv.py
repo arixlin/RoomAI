@@ -4,6 +4,8 @@ import roomai.common
 import roomai.bridge
 import random
 import roomai.bridge
+from functools import cmp_to_key
+import logging
 
 
 class BridgeEnv(roomai.common.AbstractEnv):
@@ -22,34 +24,42 @@ class BridgeEnv(roomai.common.AbstractEnv):
         if self.__params__["start_turn"] not in [roomai.bridge.Direction.north,roomai.bridge.Direction.east, roomai.bridge.Direction.south,roomai.bridge.Direction.west]:
             raise ValueError("start_turn is %s, not one of [roomai.bridge.Direction.north,roomai.bridge.Direction.east, roomai.bridge.Direction.south,roomai.bridge.Direction.west]"%(str(self.__params__["start_turn"])))
 
-        if "allcards" in params:
-            self.__params__["allcards"] = list(params["allcards"])
-        else:
-            self.__params__["allcards"] = list(roomai.bridge.AllBridgePokerCards.values())
-            random.shuffle(self.__params__["allcards"])
 
         if "vulnerable" in params:
             self.__params__["vulnerable"] = list(params["vulnerable"])
         else:
             self.__params__["vulnerable"] = [False for i in range(4)]
+
         if len(self.__params__["vulnerable"]) != 4:
             raise ValueError("len(self.__params__[\"vulnerable\"]) != 4")
+
         if self.__params__["vulnerable"][roomai.bridge.Direction.south] != self.__params__["vulnerable"][roomai.bridge.Direction.north]:
             raise ValueError("The north and south players have different vulnerable states. (north vulnerable: %s, south vulnerable: %s)"%(str(self.__params__["vulnerable"][roomai.bridge.Direction.north]),str(self.__params__["vulnerable"][roomai.bridge.Direction.south])))
+
         if self.__params__["vulnerable"][roomai.bridge.Direction.west]  != self.__params__["vulnerable"][roomai.bridge.Direction.east]:
             raise ValueError("The east and west players have different vulnerable states. (north vulnerable: %s, south vulnerable: %s)"%(str(self.__params__["vulnerable"][roomai.bridge.Direction.north]),str(self.__params__["vulnerable"][roomai.bridge.Direction.south])))
 
+        if "num_normal_players" in params:
+            logger = roomai.get_logger()
+            logger.warning("Bridge is a game of 4 normal players. Ingores the \"num_normal_players\" option")
+        self.__params__["num_normal_players"] = 4
 
         self.public_state                        = roomai.bridge.BridgePublicState()
         self.public_state.__stage__              = "bidding"
         self.public_state.__turn__               = self.__params__["start_turn"]
         self.public_state.__playing_is_vulnerable__ = list(self.__params__["vulnerable"])
 
-        self.person_states = [roomai.bridge.BridgePersonState() for i in range(4)]
-        num = int(len(roomai.bridge.AllBridgePokerCards) / 4)
+        self.person_states = [roomai.bridge.BridgePersonState() for i in range(5)]
+        for i in range(5):
+            self.person_states[i].__id__ = i
+        num = int(len(roomai.bridge.AllBridgePlayingPokerCards) / 4)
+
+        allcards = list(roomai.bridge.AllBridgePlayingPokerCards.values())
+        #allcards.sort(key = cmp_to_key(roomai.bridge.BridgePlayingPokerCard.compare))
+        random.shuffle(allcards)
         for i in range(4):
             self.person_states[i].__hand_cards_dict__ = dict()
-            for card in self.__params__["allcards"][i*num:(i+1)*num]:
+            for card in allcards[i*num:(i+1)*num]:
                 self.person_states[i].__hand_cards_dict__[card.key] = card
         self.person_states[self.public_state.turn].__available_actions__ \
             = self.available_actions(self.public_state, self.person_states[self.public_state.turn])
@@ -57,7 +67,7 @@ class BridgeEnv(roomai.common.AbstractEnv):
 
         self.private_state = roomai.bridge.BridgePrivateState()
 
-        self.__gen_history__()
+        self.__gen_state_history_list__()
         return self.__gen_infos__(), self.public_state, self.person_states, self.private_state
 
     def forward(self, action):
@@ -74,9 +84,9 @@ class BridgeEnv(roomai.common.AbstractEnv):
         if self.is_action_valid(action, pu, pes[pu.turn]) == False:
             raise ValueError("%s is invalid action"%(action.key))
         pes[pu.turn].__available_actions__ = dict()
+        pu.__action_history__.append((pu.turn, action))
 
         if pu.stage == "bidding": ## the bidding stage
-            pu.__action_history__.append((pu.turn,action))
             if len(pu.action_history) == 4:
                 flag = True
                 for i in range(4):
@@ -84,7 +94,7 @@ class BridgeEnv(roomai.common.AbstractEnv):
                 if flag == True:
                     pu.__is_terminal__ = True
                     pu.__scores__      = [0,0,0,0]
-                    self.__gen_history__()
+                    self.__gen_state_history_list__()
                     return self.__gen_infos__(), self.public_state, self.person_states, self.private_state
 
             if action.bidding_option == "pass":
@@ -110,6 +120,10 @@ class BridgeEnv(roomai.common.AbstractEnv):
 
             if len(pu.playing_cards_on_table) == 4:
                 playerid1,playerid2 = self.__whois_winner_per_pier__(pu)
+                logger = roomai.get_logger()
+                if logger.level <= logging.DEBUG:
+                    logger.debug("The winners of this pier are %d and %d"%(playerid1,playerid2))
+
                 pu.__playing_win_tricks_sofar__[playerid1] += 1
                 pu.__playing_win_tricks_sofar__[playerid2] += 1
                 pu.__playing_cards_on_table__ = []
@@ -117,10 +131,15 @@ class BridgeEnv(roomai.common.AbstractEnv):
                     pu.__is_terminal__ = True
                     self.__compute_score__()
                 else:
-                    pes[pu.turn].__available_actions__ = BridgeEnv.available_actions(public_state= pu, person_state=pes[pu.playing_card_turn])
+                    pu.__playing_card_turn__ = playerid1
+                    pu.__turn__                = playerid1
+                    if pu.__playing_card_turn__ == (pu.__playing_dealerid__ + 2)%4:
+                        pu.__turn__ = playerid2
+
+                    pes[pu.__turn__].__available_actions__ = BridgeEnv.available_actions(public_state= pu, person_state=pes[pu.playing_card_turn])
             else:
                 pu.__playing_card_turn__ = (pu.__playing_card_turn__ + 1) % 4
-                if pu.playing_card_turn == pu.playing_dealerid:
+                if pu.playing_card_turn == (pu.playing_dealerid + 2)%4:
                     pu.__turn__ = (pu.playing_card_turn + 2) % 4
                 else:
                     pu.__turn__ = pu.playing_card_turn
@@ -130,7 +149,7 @@ class BridgeEnv(roomai.common.AbstractEnv):
             raise ValueError("The public_state.stage = %d is invalid"%(self.public_state.stage))
 
 
-        self.__gen_history__()
+        self.__gen_state_history_list__()
         return self.__gen_infos__(), self.public_state,self.person_states, self.private_state
 
     def __remove_card_from_hand_cards__(self, person_state, card):
@@ -138,13 +157,13 @@ class BridgeEnv(roomai.common.AbstractEnv):
 
     def __compare_card_with_contract_suit__(self, card1, card2, contract_suit):
         if card1.suit == contract_suit and card2.suit == contract_suit:
-            return roomai.bridge.BridgePokerCard.compare(card1, card2)
+            return roomai.bridge.BridgeBiddingPokerCard.compare(card1, card2)
         elif card1.suit == contract_suit and card2.suit != contract_suit:
             return 1
         elif card1.suit != contract_suit and card2.suit == contract_suit:
             return -1
         else:
-            return roomai.bridge.BridgePokerCard.compare(card1, card2)
+            return roomai.bridge.BridgeBiddingPokerCard.compare(card1, card2)
 
     def __compute_score__(self):
         '''
@@ -154,17 +173,17 @@ class BridgeEnv(roomai.common.AbstractEnv):
         '''
         pu = self.public_state
         pu.__scores__ = [0, 0, 0, 0]
-        playing_point_rank = roomai.bridge.contract_point_to_rank[pu.playing_contract_point]
+        playing_point_rank = pu.playing_contract_card.point_rank
         excessive_tricks = pu.playing_win_tricks_sofar[pu.playing_dealerid]  - 6 - playing_point_rank
 
         if excessive_tricks >= 0:
             ####
             tricks_score     = 0
-            if pu.playing_contract_suit == "NotTrump":
+            if pu.playing_contract_card.suit == "NotTrump":
                 tricks_score = (excessive_tricks * 30 + 10) * pu.playing_magnification
-            elif pu.playing_contract_suit == "Spade" or pu.playing_contract_suit == "Heart":
+            elif pu.playing_contract_card.suit == "Spade" or pu.playing_contract_card.suit == "Heart":
                 tricks_score = excessive_tricks * 30 * pu.playing_magnification
-            elif pu.playing_contract_suit == 'Diamond' or pu.playing_contract_suit == 'Club':
+            elif pu.playing_contract_card.suit == 'Diamond' or pu.playing_contract_card.suit == 'Club':
                 tricks_score = excessive_tricks * 20
             else:
                 raise ValueError("%s is not valid playing_contract_suit (NotTrump, Spade, Heart, Diamond, Club)"%(pu.playing_contract_suit))
@@ -199,9 +218,9 @@ class BridgeEnv(roomai.common.AbstractEnv):
             #####
             extensive_trick_score = 0
             if pu.playing_magnification == 1:
-                if pu.playing_contract_suit == "NotTrump" \
-                        or pu.playing_contract_suit == "Spade" \
-                        or pu.playing_contract_suit == "Heart":
+                if pu.playing_contract_card.suit == "NotTrump" \
+                        or pu.playing_contract_card.suit == "Spade" \
+                        or pu.playing_contract_card.suit == "Heart":
                     extensive_trick_score = excessive_tricks * 30
                 else:
                     extensive_trick_score = excessive_tricks * 20
@@ -262,12 +281,12 @@ class BridgeEnv(roomai.common.AbstractEnv):
 
 
     def __whois_winner_per_pier__(self, pu):
-        max_id   = 0
-        max_card = pu.playing_cards_on_table[0]
-        for i in range(1,4):
-            if self.__compare_card_with_contract_suit__(max_card, pu.playing_cards_on_table[i], pu.playing_contract_suit):
-                max_id   = i
-                max_card = pu.playing_cards_on_table[i]
+        max_id   = pu.action_history[-1][0]
+        max_card = pu.playing_cards_on_table[-1]
+        for i in range(2,5):
+            if self.__compare_card_with_contract_suit__(max_card, pu.playing_cards_on_table[-i], pu.playing_contract_card.suit) < 0:
+                max_id   = pu.action_history[-i][0]
+                max_card = pu.playing_cards_on_table[-i]
 
         return max_id, (max_id + 2)%4
 
@@ -302,8 +321,7 @@ class BridgeEnv(roomai.common.AbstractEnv):
 
     def __bidding_process_bid__(self, action):
         pu = self.public_state
-        pu.__bidding_candidate_contract_point__ = action.bidding_contract_point
-        pu.__bidding_candidate_contract_suit__ = action.bidding_contract_suit
+        pu.__bidding_candidate_contract_card__ = action.bidding_card
         pu.__bidding_last_bidder__ = pu.turn
         pu.__bidding_magnification__ = 1
 
@@ -316,8 +334,7 @@ class BridgeEnv(roomai.common.AbstractEnv):
     def __bidding_to_playing__(self, action):
         pu = self.public_state
         pu.__stage__                  = "playing"
-        pu.__playing_contract_point__ = pu.bidding_candidate_contract_point
-        pu.__playing_contract_suit__  = pu.bidding_candidate_contract_suit
+        pu.__playing_contract_card__  = pu.bidding_candidate_contract_card
         pu.__playing_magnification__  = pu.bidding_magnification
 
         start_turn  = self.__params__["start_turn"]
@@ -325,32 +342,24 @@ class BridgeEnv(roomai.common.AbstractEnv):
         for i in range(len(pu.action_history)):
             if (i+start_turn)%4 == last_bidder or (i + start_turn + 2) % 4 == last_bidder:
                 if pu.action_history[i][1].bidding_option == "bid" \
-                        and pu.action_history[i][1].bidding_contract_suit == pu.playing_contract_suit:
+                        and pu.action_history[i][1].bidding_card.suit == pu.playing_contract_card.suit:
                     pu.__playing_dealerid__ = i
                     break
 
-        pu.__previous_id__ = pu.turn
-        pu.__previous_action__ = action
-        pu.__turn__ = pu.playing_dealerid
-        pu.__playing_card_turn__ = pu.playing_dealerid
+        pu.__turn__ = (pu.playing_dealerid +1)%4
+        pu.__playing_card_turn__ = (pu.playing_dealerid + 1)%4
         self.person_states[pu.turn].__available_actions__ = self.available_actions(pu,self.person_states[pu.turn])
 
 
     @classmethod
-    def __available_contract__(self, pu, point, suit):
-        if point not in roomai.bridge.contract_point_to_rank:
-            raise  ValueError("The contract point must be one of (%s)"%(",".join(list(roomai.bridge.contract_point_to_rank.keys()))))
-        if suit not in  roomai.bridge.contract_suit_to_rank:
-            raise  ValueError("The contract suit must be one of (%s)"%(",".join(list(roomai.bridge.contract_suit_to_rank.keys()))))
-        suit_rank  = roomai.bridge.contract_suit_to_rank[suit]
-        point_rank = roomai.bridge.contract_point_to_rank[point]
+    def __available_contract__(self, pu, card):
 
-        if pu.bidding_candidate_contract_point is None:
+        if pu.bidding_candidate_contract_card is None:
             return True
-        elif point_rank > roomai.bridge.contract_point_to_rank[pu.bidding_candidate_contract_point]:
+        elif card.point_rank > pu.bidding_candidate_contract_card.point_rank:
             return True
-        elif point_rank == roomai.bridge.contract_point_to_rank[pu.bidding_candidate_contract_point]:
-            if suit_rank > roomai.bridge.contract_suit_to_rank[pu.bidding_candidate_contract_suit]:
+        elif card.point_rank == pu.bidding_candidate_contract_card.point_rank:
+            if card.suit_rank > pu.bidding_candidate_contract_card.point_rank:
                 return True
             else:
                 return False
@@ -365,10 +374,9 @@ class BridgeEnv(roomai.common.AbstractEnv):
     def available_actions(cls, public_state, person_state):
         if public_state.stage == "bidding": ## the bidding stage
             available_actions = dict()
-            for point in roomai.bridge.contract_point_to_rank:
-                for suit in roomai.bridge.contract_suit_to_rank:
-                    if BridgeEnv.__available_contract__(public_state, point, suit) == True:
-                        key = "bidding_bid_%s_%s"%(point, suit)
+            for card in roomai.bridge.AllBridgeBiddingPokerCards.values():
+                    if BridgeEnv.__available_contract__(public_state, card) == True:
+                        key = "bidding_bid_%s"%(card.key)
                         available_actions[key] = roomai.bridge.BridgeAction.lookup(key)
             available_actions["bidding_pass"] = roomai.bridge.BridgeAction.lookup("bidding_pass")
 
@@ -418,3 +426,8 @@ class BridgeEnv(roomai.common.AbstractEnv):
             raise ValueError("The public_state.stage = %s is invalid. The public_state.stage must be one of [\"bidding\",\"playing\"]"%(public_state.stage))
 
 
+    def __deepcopy__(self, memodict={}, newinstance = None):
+        if newinstance is None:
+            newinstance = BridgeEnv()
+        newinstance = super(BridgeEnv, self).__deepcopy__(newinstance=newinstance)
+        return newinstance

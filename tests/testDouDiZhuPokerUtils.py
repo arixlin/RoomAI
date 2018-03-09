@@ -21,13 +21,13 @@ class DouDiZhuPokerUtilTester(unittest.TestCase):
         a = DouDiZhuPokerAction([1, 1, 1, 1, 1], [2])
         self.assertEqual(a.pattern[0], "i_invalid")
 
-        a = DouDiZhuPokerAction([DouDiZhuActionElement.str_to_rank["x"]], [2])
+        a = DouDiZhuPokerAction([15], [2])
         self.assertEqual(a.pattern[0], "i_invalid")
 
-        a = DouDiZhuPokerAction([DouDiZhuActionElement.str_to_rank["x"]], [])
+        a = DouDiZhuPokerAction([15], [])
         self.assertEqual(a.pattern[0], "i_cheat")
         
-        a = DouDiZhuPokerAction([DouDiZhuActionElement.str_to_rank["R"], DouDiZhuActionElement.str_to_rank["r"]], [])
+        a = DouDiZhuPokerAction([13, 14], [])
         self.assertEqual(a.pattern[0], "x_rocket")
         
 
@@ -46,15 +46,7 @@ class DouDiZhuPokerUtilTester(unittest.TestCase):
         """
 
         """
-        from roomai.doudizhupoker.DouDiZhuPokerAction import  DouDiZhuPokerAction as Action
-        a = Action.lookup("3333")
+        a = DouDiZhuPokerAction.lookup("3333")
 
-        print (a.pattern)
+        print (a.pattern[0])
         assert(a.pattern[0] == "p_4_1_0_0_0")
-
-        a = Action.lookup("3334445556667778")
-        assert(a.pattern[0] == "p_12_4_1_4_0")
-        assert(a.maxMasterPoint ==4)
-
-        a = Action.lookup("333444555666")
-        assert(a.pattern[0] == "p_12_4_1_0_0")
